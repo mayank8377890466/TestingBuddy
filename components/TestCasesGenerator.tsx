@@ -45,8 +45,8 @@ export default function TestCasesGenerator() {
       return;
     }
 
-    // For PDF and DOCX, use server-side parser
-    if (fileName.endsWith('.pdf') || fileName.endsWith('.docx')) {
+    // For PDF, DOCX and DOC, use server-side parser
+    if (fileName.endsWith('.pdf') || fileName.endsWith('.docx') || fileName.endsWith('.doc')) {
       setIsParsingPrd(true);
       try {
         const formData = new FormData();
@@ -57,9 +57,15 @@ export default function TestCasesGenerator() {
           body: formData
         });
         
+        const contentType = resp.headers.get("content-type");
         if (!resp.ok) {
-          const data = await resp.json();
-          throw new Error(data.error || 'Failed to parse document');
+          if (contentType && contentType.includes("application/json")) {
+            const data = await resp.json();
+            throw new Error(data.error || 'Failed to parse document');
+          } else {
+            const text = await resp.text();
+            throw new Error(`Server Error: ${resp.status} - ${text.substring(0, 100)}...`);
+          }
         }
         
         const data = await resp.json();
@@ -73,7 +79,7 @@ export default function TestCasesGenerator() {
       return;
     }
 
-    setErrorMsg('Unsupported file format. Please upload PDF, DOCX, TXT, or MD.');
+    setErrorMsg('Unsupported file format. Please upload PDF, DOCX, DOC, TXT, or MD.');
     setPrdFileName('');
   };
 
@@ -243,7 +249,7 @@ export default function TestCasesGenerator() {
                 className="mt-1 flex items-center justify-center gap-2 px-4 py-4 bg-slate-50 dark:bg-slate-800 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-lg cursor-pointer hover:border-emerald-400 hover:bg-emerald-50/50 dark:hover:bg-emerald-900/10 transition-all"
               >
                 <Upload size={16} className="text-slate-400" />
-                <span className="text-sm text-slate-500">Click to upload PRD (.txt, .md, .pdf, .docx)</span>
+                <span className="text-sm text-slate-500">Click to upload PRD (.txt, .md, .pdf, .doc, .docx)</span>
               </label>
             )}
           </div>
