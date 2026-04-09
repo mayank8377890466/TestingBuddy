@@ -1,13 +1,19 @@
 "use client";
 
-import React, { useState } from 'react';
-import { FileText, Loader2, Plus, Download, Server } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { FileText, Loader2, Download, Server, Upload, X } from 'lucide-react';
+import { getConfig } from '../tools/configStore';
 
 export default function TestCasesGenerator() {
   const [jiraProjectId, setJiraProjectId] = useState('');
   const [jiraTicketId, setJiraTicketId] = useState('');
   const [testLinkProject, setTestLinkProject] = useState('');
   const [testSuite, setTestSuite] = useState('');
+  const [additionalContext, setAdditionalContext] = useState('');
+  const [prdFileName, setPrdFileName] = useState('');
+  const [prdContent, setPrdContent] = useState('');
+  const [isParsingPrd, setIsParsingPrd] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   
   const [generating, setGenerating] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
@@ -15,20 +21,70 @@ export default function TestCasesGenerator() {
 
   const [globalConfig, setGlobalConfig] = useState<any>({ jira: {}, llm: {}, testlink: {} });
 
-  React.useEffect(() => {
-    async function loadConfig() {
-      try {
-        const res = await fetch('/api/config');
-        if (res.ok) {
-          const config = await res.json();
-          setGlobalConfig(config);
-        }
-      } catch {}
-    }
-    loadConfig();
+  useEffect(() => {
+    const config = getConfig();
+    setGlobalConfig(config);
   }, []);
 
-  const handleGenerate = async (type: 'excel' | 'testlink') => {
+  const handlePrdUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    setPrdFileName(file.name);
+    setErrorMsg('');
+    
+    const fileName = file.name.toLowerCase();
+    
+    // For TXT and MD, use local reader for speed
+    if (fileName.endsWith('.txt') || fileName.endsWith('.md')) {
+      const reader = new FileReader();
+      reader.onload = (ev) => {
+        setPrdContent((ev.target?.result as string) || '');
+      };
+      reader.readAsText(file);
+      return;
+    }
+
+    // For PDF and DOCX, use server-side parser
+    if (fileName.endsWith('.pdf') || fileName.endsWith('.docx')) {
+      setIsParsingPrd(true);
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+        
+        const resp = await fetch('/api/parse', {
+          method: 'POST',
+          body: formData
+        });
+        
+        if (!resp.ok) {
+          const data = await resp.json();
+          throw new Error(data.error || 'Failed to parse document');
+        }
+        
+        const data = await resp.json();
+        setPrdContent(data.text || '');
+      } catch (err: any) {
+        setErrorMsg(`Document parsing failed: ${err.message}`);
+        setPrdFileName('');
+      } finally {
+        setIsParsingPrd(false);
+      }
+      return;
+    }
+
+    setErrorMsg('Unsupported file format. Please upload PDF, DOCX, TXT, or MD.');
+    setPrdFileName('');
+  };
+
+  const clearPrd = () => {
+    setPrdFileName('');
+    setPrdContent('');
+    setIsParsingPrd(false);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+  };
+
+  const handleGenerate = async () => {
     const keys = jiraTicketId.split(/[,\n]+/).map(k => k.trim()).filter(Boolean);
     if (keys.length === 0) {
       setErrorMsg('Enter at least one JIRA Ticket ID.');
@@ -56,46 +112,42 @@ export default function TestCasesGenerator() {
           jiraCredentials: jiraCreds.url ? { url: jiraCreds.url, email: jiraCreds.email, token: jiraCreds.token } : null,
           issueKeys: keys,
           llmConfig: { llm: llmCreds.llm || 'groq', llmKey: llmCreds.llmKey },
-          testSuiteName: testSuite || 'Generated Test Cases'
+          testSuiteName: testSuite || 'Generated Test Cases',
+          additionalContext: additionalContext || '',
+          prdContent: prdContent || ''
         })
       });
 
       const data = await resp.json();
       if (!resp.ok || data.error) throw new Error(data.error || 'Generation failed.');
 
-      if (type === 'testlink') {
-         setXmlContent(data.xml || '');
-         
-         // Trigger TestLink Auto-Upload
-         if (tlCreds.devKey && tlCreds.url) {
-           try {
-             alert("Uploading directly to TestLink...");
-             const uploadResp = await fetch('/api/testlink/upload', {
-               method: 'POST',
-               headers: { 'Content-Type': 'application/json' },
-               body: JSON.stringify({
-                 testCases: data.testCases,
-                 testSuiteName: testSuite || 'Generated Test Cases',
-                 projectName: testLinkProject || '',
-                 testlinkCredentials: { url: tlCreds.url, devKey: tlCreds.devKey }
-               })
-             });
-             const uploadData = await uploadResp.json();
-             if (uploadResp.ok) {
-                alert(`Successfully uploaded to TestLink! Created/Updated ${uploadData.count || 0} cases.`);
-             } else {
-                throw new Error(uploadData.error || 'Failed to upload to TestLink');
-             }
-           } catch (upErr: any) {
-             setErrorMsg(`Generated XML locally, but Upload failed: ${upErr.message}`);
-           }
-         } else {
-           alert("TestLink Credentials missing in config. Showing XML only.");
-         }
+      setXmlContent(data.xml || '');
+      
+      // Trigger TestLink Auto-Upload
+      if (tlCreds.devKey && tlCreds.url) {
+        try {
+          alert("Uploading directly to TestLink...");
+          const uploadResp = await fetch('/api/testlink/upload', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              testCases: data.testCases,
+              testSuiteName: testSuite || 'Generated Test Cases',
+              projectName: testLinkProject || '',
+              testlinkCredentials: { url: tlCreds.url, devKey: tlCreds.devKey }
+            })
+          });
+          const uploadData = await uploadResp.json();
+          if (uploadResp.ok) {
+             alert(`Successfully uploaded to TestLink! Created/Updated ${uploadData.count || 0} cases.`);
+          } else {
+             throw new Error(uploadData.error || 'Failed to upload to TestLink');
+          }
+        } catch (upErr: any) {
+          setErrorMsg(`Generated XML locally, but Upload failed: ${upErr.message}`);
+        }
       } else {
-         // Mock export as Excel
-         alert("Excel export functionality is not fully implemented on backend yet. Falling back to TestLink XML generation.");
-         setXmlContent(data.xml || '');
+        alert("TestLink Credentials missing in config. Showing XML only.");
       }
 
     } catch (err: any) {
@@ -152,20 +204,55 @@ export default function TestCasesGenerator() {
             <label className="text-xs font-medium text-slate-700 dark:text-slate-400">Test Suite</label>
             <input type="text" value={testSuite} onChange={(e)=>setTestSuite(e.target.value)} placeholder="e.g., Sprint 15 Login Tests" className="focus:ring-2 focus:ring-emerald-500 outline-none w-full mt-1 px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm shadow-sm transition-shadow" />
           </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-700 dark:text-slate-400">Additional Context</label>
+            <textarea
+              value={additionalContext}
+              onChange={e => setAdditionalContext(e.target.value)}
+              placeholder="Any additional instructions or context for AI test case generation..."
+              className="focus:ring-2 focus:ring-emerald-500 outline-none w-full mt-1 px-4 py-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm shadow-sm min-h-[100px] resize-y"
+            ></textarea>
+          </div>
+
+          <div>
+            <label className="text-xs font-medium text-slate-700 dark:text-slate-400">Upload PRD (Optional)</label>
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".txt,.md,.pdf,.doc,.docx"
+              onChange={handlePrdUpload}
+              className="hidden"
+              id="prd-upload"
+            />
+            {prdFileName ? (
+              <div className="mt-1 flex items-center gap-2 px-4 py-2.5 bg-emerald-50 dark:bg-emerald-900/20 border border-emerald-200 dark:border-emerald-800 rounded-lg">
+                {isParsingPrd ? <Loader2 size={16} className="text-emerald-600 animate-spin" /> : <FileText size={16} className="text-emerald-600 shrink-0" />}
+                <span className="text-sm text-emerald-800 dark:text-emerald-300 font-medium truncate flex-1">
+                  {isParsingPrd ? `Extracting from ${prdFileName}...` : prdFileName}
+                </span>
+                {!isParsingPrd && (
+                  <button onClick={clearPrd} className="p-1 hover:bg-emerald-100 dark:hover:bg-emerald-800 rounded transition-colors" title="Remove file">
+                    <X size={14} className="text-emerald-600" />
+                  </button>
+                )}
+              </div>
+            ) : (
+              <label
+                htmlFor="prd-upload"
+                className="mt-1 flex items-center justify-center gap-2 px-4 py-4 bg-slate-50 dark:bg-slate-800 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-lg cursor-pointer hover:border-emerald-400 hover:bg-emerald-50/50 dark:hover:bg-emerald-900/10 transition-all"
+              >
+                <Upload size={16} className="text-slate-400" />
+                <span className="text-sm text-slate-500">Click to upload PRD (.txt, .md, .pdf, .docx)</span>
+              </label>
+            )}
+          </div>
         </div>
       </div>
 
       <div className="pt-6 border-t border-slate-100 dark:border-slate-800 flex justify-end gap-4 items-center">
         <button 
-          onClick={() => handleGenerate('excel')}
-          disabled={generating}
-          className="flex items-center gap-2 px-6 py-2.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-700 rounded-lg font-medium text-sm transition-colors text-slate-700 dark:text-slate-200 shadow-sm"
-        >
-          {generating ? <Loader2 size={16} className="animate-spin" /> : <Download size={16} />}
-          Generate Excel
-        </button>
-        <button 
-          onClick={() => handleGenerate('testlink')}
+          onClick={() => handleGenerate()}
           disabled={generating}
           className="flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium text-sm transition-colors shadow-lg shadow-emerald-500/30"
         >

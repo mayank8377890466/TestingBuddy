@@ -1,14 +1,15 @@
 "use client";
 
 import React, { useState, useEffect, useCallback } from 'react';
-import { FileText, DownloadCloud, Sparkles, Download, ArrowLeft, Loader2, CheckCircle } from 'lucide-react';
+import { FileText, DownloadCloud, Sparkles, Download, ArrowLeft, Loader2, CheckCircle, Search } from 'lucide-react';
 import Markdown from 'markdown-to-jsx';
+import { getConfig } from '../tools/configStore';
 
 export default function TestPlanGenerator() {
   const [step, setStep] = useState(1);
   const [jiraUrl, setJiraUrl] = useState('');
   const [projectId, setProjectId] = useState('');
-  const [jiraId, setJiraId] = useState('');
+  const [ticketSearch, setTicketSearch] = useState('');
   const [context, setContext] = useState('');
   const [isFetching, setIsFetching] = useState(false);
   const [isGenerating, setIsGenerating] = useState(false);
@@ -19,21 +20,13 @@ export default function TestPlanGenerator() {
   const [generatedPlan, setGeneratedPlan] = useState('');
   const [errorMsg, setErrorMsg] = useState('');
 
-  // Load credentials asynchronously
+  // Load credentials from localStorage
   const [globalConfig, setGlobalConfig] = useState<any>({ jira: {}, llm: {} });
 
   useEffect(() => {
-    async function loadConfig() {
-      try {
-        const res = await fetch('/api/config');
-        if (res.ok) {
-          const config = await res.json();
-          setGlobalConfig(config);
-          if (config.jira?.url) setJiraUrl(config.jira.url);
-        }
-      } catch {}
-    }
-    loadConfig();
+    const config = getConfig();
+    setGlobalConfig(config);
+    if (config.jira?.url) setJiraUrl(config.jira.url);
   }, []);
 
   // Suppress harmless React 19 key warnings from markdown-to-jsx
@@ -65,8 +58,7 @@ export default function TestPlanGenerator() {
           url: jiraCreds.url,
           email: jiraCreds.email,
           token: jiraCreds.token,
-          projectKey: projectId,
-          sprint: jiraId // Using jiraId as sprint or key depending on usage in fetch api
+          projectKey: projectId
         })
       });
 
@@ -74,12 +66,13 @@ export default function TestPlanGenerator() {
       if (!resp.ok) throw new Error(data.error || 'Failed to fetch issues');
       
       if (!data.issues || data.issues.length === 0) {
-        setErrorMsg("No tickets found for to specific criteria.");
+        setErrorMsg("No tickets found for the specified criteria.");
         return;
       }
       
       setFetchedRawIssues(data.issues);
-      setSelectedIssueKeys(new Set(data.issues.map((i: any) => i.key)));
+      setSelectedIssueKeys(new Set()); // All unchecked by default
+      setTicketSearch(''); // Reset search
       setShowModal(true);
     } catch (err: any) {
       setErrorMsg(err.message);
@@ -187,10 +180,42 @@ export default function TestPlanGenerator() {
            <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" onClick={() => setShowModal(false)} />
            <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-6 rounded-2xl shadow-xl w-full max-w-lg z-10 animate-in zoom-in-95 duration-200 flex flex-col max-h-[80vh]">
               <h3 className="text-lg font-bold text-slate-800 dark:text-slate-100 mb-2">Select Tickets to Analyze</h3>
-              <p className="text-sm text-slate-500 mb-4">Choose which fetched tickets should be included in the AI context.</p>
+              <p className="text-sm text-slate-500 mb-2">Choose which fetched tickets should be included in the AI context.</p>
+              
+              {/* Search bar */}
+              <div className="relative mb-4">
+                <Search size={14} className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" />
+                <input
+                  type="text"
+                  value={ticketSearch}
+                  onChange={e => setTicketSearch(e.target.value)}
+                  placeholder="Search by ticket key or summary..."
+                  className="w-full pl-9 pr-3 py-2 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 outline-none transition-shadow"
+                />
+              </div>
+
+              {/* Select All / Deselect All */}
+              <div className="flex items-center gap-3 mb-3">
+                <button
+                  onClick={() => setSelectedIssueKeys(new Set(fetchedRawIssues.map(i => i.key)))}
+                  className="text-xs font-medium text-blue-600 hover:text-blue-700 transition-colors"
+                >Select All</button>
+                <span className="text-slate-300">|</span>
+                <button
+                  onClick={() => setSelectedIssueKeys(new Set())}
+                  className="text-xs font-medium text-slate-500 hover:text-slate-700 transition-colors"
+                >Deselect All</button>
+                <span className="ml-auto text-xs text-slate-400">{fetchedRawIssues.length} tickets</span>
+              </div>
               
               <div className="flex-1 overflow-y-auto space-y-2 pr-2 mb-6">
-                 {fetchedRawIssues.map(issue => (
+                 {fetchedRawIssues
+                   .filter(issue => {
+                     if (!ticketSearch.trim()) return true;
+                     const q = ticketSearch.toLowerCase();
+                     return issue.key.toLowerCase().includes(q) || (issue.summary || '').toLowerCase().includes(q);
+                   })
+                   .map(issue => (
                    <label key={issue.key} className="flex items-start gap-3 p-3 rounded-lg border border-slate-200 dark:border-slate-700 hover:bg-slate-50 dark:hover:bg-slate-800 cursor-pointer transition-colors">
                       <input 
                         type="checkbox" 
@@ -237,15 +262,9 @@ export default function TestPlanGenerator() {
           )}
 
           <div className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-              <div>
-                <label className="text-xs font-medium text-slate-700 dark:text-slate-400">Project ID</label>
-                <input type="text" value={projectId} onChange={(e)=>setProjectId(e.target.value)} placeholder="e.g., VWOAPP" className="focus:ring-2 focus:ring-blue-500 outline-none w-full mt-1 px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm shadow-sm transition-shadow uppercase" />
-              </div>
-              <div>
-                <label className="text-xs font-medium text-slate-700 dark:text-slate-400">JIRA ID (Sprint / Issue key)</label>
-                <input type="text" value={jiraId} onChange={(e)=>setJiraId(e.target.value)} placeholder="e.g., Sprint 15" className="focus:ring-2 focus:ring-blue-500 outline-none w-full mt-1 px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm shadow-sm transition-shadow" />
-              </div>
+            <div>
+              <label className="text-xs font-medium text-slate-700 dark:text-slate-400">Project ID</label>
+              <input type="text" value={projectId} onChange={(e)=>setProjectId(e.target.value)} placeholder="e.g., VWOAPP" className="focus:ring-2 focus:ring-blue-500 outline-none w-full mt-1 px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm shadow-sm transition-shadow uppercase" />
             </div>
 
             <div>

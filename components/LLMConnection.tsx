@@ -2,24 +2,17 @@
 
 import React, { useState, useEffect } from 'react';
 import { Settings, CheckCircle2, XCircle, Activity, Save } from 'lucide-react';
+import { getConfig, saveConfig } from '../tools/configStore';
 
 export default function LLMConnection() {
   const [status, setStatus] = useState<'idle'|'loading'|'success'|'error'>('idle');
   const [formData, setFormData] = useState({ llm: 'groq', llmKey: '' });
 
   useEffect(() => {
-    async function loadConfig() {
-      try {
-        const res = await fetch('/api/config');
-        if (res.ok) {
-          const config = await res.json();
-          if (config.llm && config.llm.llm) {
-             setFormData(config.llm);
-          }
-        }
-      } catch {}
+    const config = getConfig();
+    if (config.llm && config.llm.llm) {
+      setFormData(config.llm);
     }
-    loadConfig();
   }, []);
 
   const handleChange = (field: string, value: string) => {
@@ -46,14 +39,10 @@ export default function LLMConnection() {
     }
   };
 
-  const handleSave = async () => {
+  const handleSave = () => {
     try {
-      await fetch('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'llm', data: formData })
-      });
-      alert('LLM connection settings saved globally.');
+      saveConfig('llm', formData);
+      alert('LLM connection settings saved.');
     } catch {
       alert('Failed to save settings.');
     }

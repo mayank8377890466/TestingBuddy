@@ -2,59 +2,57 @@
 
 import React, { useState, useEffect } from 'react';
 import { Link as LinkIcon, CheckCircle2, XCircle, Activity, Save } from 'lucide-react';
+import { getConfig, saveConfig } from '../tools/configStore';
 
 export default function TestLinkConnection() {
   const [status, setStatus] = useState<'idle'|'loading'|'success'|'error'>('idle');
   const [formData, setFormData] = useState({ provider: 'testlink', devKey: '', url: '' });
+  const [errorDetail, setErrorDetail] = useState('');
 
   useEffect(() => {
-    async function loadConfig() {
-      try {
-        const res = await fetch('/api/config');
-        if (res.ok) {
-          const config = await res.json();
-          if (config.testlink && config.testlink.devKey) {
-             setFormData(config.testlink);
-          }
-        }
-      } catch {}
+    const config = getConfig();
+    if (config.testlink && config.testlink.devKey) {
+      setFormData(config.testlink);
     }
-    loadConfig();
   }, []);
 
   const handleChange = (field: string, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }));
     setStatus('idle');
+    setErrorDetail('');
   };
 
   const handleTestConnection = async () => {
     if (!formData.devKey || !formData.url) {
       setStatus('error');
+      setErrorDetail('Developer Key and XML-RPC URL are both required.');
       return;
     }
     setStatus('loading');
+    setErrorDetail('');
     try {
-      // Mocking TestLink test endpoint for now or using existing one
       const resp = await fetch('/api/testlink/test', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(formData)
       });
-      if (resp.ok) setStatus('success');
-      else setStatus('error');
-    } catch {
+      if (resp.ok) {
+        setStatus('success');
+      } else {
+        const data = await resp.json().catch(() => ({}));
+        setStatus('error');
+        setErrorDetail(data.error || 'Authentication Failed. Check DevKey and XML-RPC URL.');
+      }
+    } catch (err: any) {
       setStatus('error');
+      setErrorDetail(`Connection failed: ${err.message}`);
     }
   };
 
-  const handleSave = async () => {
+  const handleSave = () => {
     try {
-      await fetch('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'testlink', data: formData })
-      });
-      alert('TestLink connection settings saved globally.');
+      saveConfig('testlink', formData);
+      alert('TestLink connection settings saved.');
     } catch {
       alert('Failed to save settings.');
     }
@@ -91,6 +89,8 @@ export default function TestLinkConnection() {
           <input type="text" value={formData.url} onChange={e => handleChange('url', e.target.value)} placeholder="https://your-testlink.com/lib/api/xmlrpc/v1/xmlrpc.php" className="focus:ring-2 focus:ring-pink-500 outline-none w-full mt-1 px-3 py-2 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm transition-shadow" />
         </div>
 
+
+
         <div className="pt-4 flex flex-row items-center gap-4">
            <button 
              onClick={handleTestConnection}
@@ -122,7 +122,7 @@ export default function TestLinkConnection() {
             <XCircle size={16} className="text-red-600 mt-0.5" />
             <div>
               <p className="text-xs font-bold text-red-800 dark:text-red-400">Connection Failed</p>
-              <p className="text-[11px] text-red-700 dark:text-red-500 mt-0.5">Authentication Failed. Check DevKey and XML-RPC URL.</p>
+              <p className="text-[11px] text-red-700 dark:text-red-500 mt-0.5">{errorDetail || 'Authentication Failed. Check DevKey and XML-RPC URL.'}</p>
             </div>
           </div>
         )}

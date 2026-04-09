@@ -8,8 +8,11 @@ export async function POST(req: Request) {
       return NextResponse.json({ success: false, error: 'TestLink URL and Developer Key are required.' }, { status: 400 });
     }
 
-    // TestLink uses XML-RPC API. We call tl.checkDevKey to validate the key.
-    const cleanUrl = url.endsWith('/') ? url.slice(0, -1) : url;
+    let cleanUrl = url.trim();
+    if (!cleanUrl.startsWith('http://') && !cleanUrl.startsWith('https://')) {
+       cleanUrl = `http://${cleanUrl}`;
+    }
+    cleanUrl = cleanUrl.endsWith('/') ? cleanUrl.slice(0, -1) : cleanUrl;
     const xmlRpcEndpoint = `${cleanUrl}/lib/api/xmlrpc/v1/xmlrpc.php`;
 
     const xmlBody = `<?xml version="1.0" encoding="UTF-8"?>
@@ -22,11 +25,16 @@ export async function POST(req: Request) {
   </params>
 </methodCall>`;
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 15000); // 15s timeout
+
     const response = await fetch(xmlRpcEndpoint, {
       method: 'POST',
       headers: { 'Content-Type': 'text/xml; charset=utf-8' },
       body: xmlBody,
+      signal: controller.signal
     });
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       return NextResponse.json({ 

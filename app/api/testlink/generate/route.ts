@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server';
 
 export async function POST(req: Request) {
   try {
-    const { jiraCredentials, issueKeys, llmConfig, testSuiteName } = await req.json();
+    const { jiraCredentials, issueKeys, llmConfig, testSuiteName, additionalContext, prdContent } = await req.json();
 
     if (!llmConfig || !llmConfig.llmKey) {
       return NextResponse.json({ error: 'LLM API Key is required for test case generation.' }, { status: 400 });
@@ -56,11 +56,21 @@ export async function POST(req: Request) {
       `- [${i.key}] (${i.type}, Priority: ${i.priority}): ${i.summary}\n  Description: ${i.description}`
     ).join('\n');
 
-    const prompt = `You are an expert QA Engineer. Generate detailed, structured test cases for the following Jira tickets that can be imported into TestLink.
+    let prompt = `You are an expert QA Engineer. Generate detailed, structured test cases for the following Jira tickets that can be imported into TestLink.
 
 Requirements:
 ${issueContext}
+`;
 
+    if (prdContent) {
+      prompt += `\nPRD DOCUMENT CONTEXT:\n${prdContent}\n`;
+    }
+
+    if (additionalContext) {
+      prompt += `\nADDITIONAL INSTRUCTIONS:\n${additionalContext}\n`;
+    }
+
+    prompt += `
 Test Suite Name: "${testSuiteName || 'Generated Test Cases'}"
 
 Generate test cases in the following STRICT JSON format. Return ONLY the JSON array, no other text, no markdown code fences:
@@ -93,7 +103,7 @@ RULES:
 - Each test case should have 3-7 detailed steps
 - Test case names should follow TC_XXX naming convention
 - Be specific and actionable — no vague steps
-- Derive ALL test cases directly from the provided requirements
+- Derive ALL test cases directly from the provided requirements${prdContent || additionalContext ? ' and external context' : ''}
 - Return ONLY valid JSON array, nothing else`;
 
     let testCases: any[] = [];

@@ -2,24 +2,17 @@
 
 import React, { useState, useEffect } from 'react';
 import { Database, CheckCircle2, XCircle, Activity, Save } from 'lucide-react';
+import { getConfig, saveConfig } from '../tools/configStore';
 
 export default function JiraConnection() {
   const [status, setStatus] = useState<'idle'|'loading'|'success'|'error'>('idle');
   const [formData, setFormData] = useState({ provider: 'jira', url: '', email: '', token: '' });
 
   useEffect(() => {
-    async function loadConfig() {
-      try {
-        const res = await fetch('/api/config');
-        if (res.ok) {
-          const config = await res.json();
-          if (config.jira && config.jira.provider) {
-             setFormData(config.jira);
-          }
-        }
-      } catch {}
+    const config = getConfig();
+    if (config.jira && config.jira.provider) {
+      setFormData(config.jira);
     }
-    loadConfig();
   }, []);
 
   const handleChange = (field: string, value: string) => {
@@ -46,14 +39,10 @@ export default function JiraConnection() {
     }
   };
 
-  const handleSave = async () => {
+  const handleSave = () => {
     try {
-      await fetch('/api/config', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ type: 'jira', data: formData })
-      });
-      alert('Jira connection settings saved globally.');
+      saveConfig('jira', formData);
+      alert('Jira connection settings saved.');
     } catch {
       alert('Failed to save settings.');
     }
