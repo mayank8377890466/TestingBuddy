@@ -45,21 +45,23 @@ export async function POST(req: Request) {
 
     const responseText = await response.text();
 
-    // Check for fault or error in the XML-RPC response
-    if (responseText.includes('<fault>') || responseText.includes('INVALID_AUTH')) {
-      return NextResponse.json({ 
-        success: false, 
-        error: 'Invalid Developer Key. Generate a new key from TestLink → My Settings → API Interface.' 
-      }, { status: 401 });
+    // Check for logical error codes (e.g. invalid key)
+    if (responseText.includes('<name>code</name>') && responseText.includes('<name>message</name>')) {
+       const msgMatch = responseText.match(/<name>message<\/name>\s*<value>\s*<string>(.*?)<\/string>/);
+       const errorMessage = msgMatch ? msgMatch[1] : 'TestLink API Error';
+       return NextResponse.json({ success: false, error: errorMessage }, { status: 401 });
     }
 
-    // If we get a boolean true or a valid response, the key is good
+    // Check for explicitly valid boolean true result
     if (responseText.includes('<boolean>1</boolean>') || responseText.includes('<value>true</value>')) {
       return NextResponse.json({ success: true, message: 'TestLink connection verified successfully.' });
     }
 
-    // Fallback — if response doesn't explicitly fail, assume success
-    return NextResponse.json({ success: true, message: 'TestLink API responded. Connection appears valid.' });
+    // If it reaches here, it didn't explicitly return true, so it's likely a failure
+    return NextResponse.json({ 
+      success: false, 
+      error: 'Connection failed: API did not return a successful validation. Please check your Developer Key.' 
+    }, { status: 401 });
 
   } catch (error: any) {
     return NextResponse.json({ 

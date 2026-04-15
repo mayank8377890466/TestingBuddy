@@ -18,6 +18,7 @@ export default function TestCasesGenerator() {
   const [generating, setGenerating] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [xmlContent, setXmlContent] = useState('');
+  const [batchProgress, setBatchProgress] = useState('');
 
   const [globalConfig, setGlobalConfig] = useState<any>({ jira: {}, llm: {}, testlink: {} });
 
@@ -92,8 +93,8 @@ export default function TestCasesGenerator() {
 
   const handleGenerate = async () => {
     const keys = jiraTicketId.split(/[,\n]+/).map(k => k.trim()).filter(Boolean);
-    if (keys.length === 0) {
-      setErrorMsg('Enter at least one JIRA Ticket ID.');
+    if (keys.length === 0 && !additionalContext.trim() && !prdContent.trim()) {
+      setErrorMsg('Please provide at least one source for generation (JIRA IDs, Additional Context, or a PRD file).');
       return;
     }
     
@@ -106,60 +107,97 @@ export default function TestCasesGenerator() {
       return;
     }
 
+    // Parse target count from context (e.g., "generate 50 cases")
+    const countMatch = additionalContext.match(/(\d+)\s*(?:test\s*)?cases?/i);
+    const totalTarget = countMatch ? Math.min(parseInt(countMatch[1], 10), 100) : 15;
+
     setGenerating(true);
+    setBatchProgress('');
     setErrorMsg('');
     setXmlContent('');
 
     try {
-      const resp = await fetch('/api/testlink/generate', {
+      const BATCH_SIZE = 5;
+      const iterations = Math.ceil(totalTarget / BATCH_SIZE);
+      let aggregatedTestCases: any[] = [];
+
+      for (let i = 0; i < iterations; i++) {
+        const remaining = totalTarget - aggregatedTestCases.length;
+        const currentBatchSize = Math.min(remaining, BATCH_SIZE);
+        setBatchProgress(`Batch ${i + 1} of ${iterations} (${aggregatedTestCases.length}/${totalTarget})...`);
+
+        const existingNames = aggregatedTestCases.map(tc => tc.name);
+
+        const resp = await fetch('/api/testlink/generate', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            jiraCredentials: jiraCreds.url ? { url: jiraCreds.url, email: jiraCreds.email, token: jiraCreds.token } : null,
+            issueKeys: keys,
+            llmConfig: { llm: llmCreds.llm || 'groq', llmKey: llmCreds.llmKey },
+            testSuiteName: testSuite || 'Generated Test Cases',
+            additionalContext: additionalContext || '',
+            prdContent: prdContent || '',
+            targetCount: currentBatchSize,
+            existingCaseNames: existingNames
+          })
+        });
+
+        const data = await resp.json();
+        if (!resp.ok || data.error) throw new Error(data.error || 'Generation failed.');
+
+        if (data.testCases && Array.isArray(data.testCases)) {
+          aggregatedTestCases = [...aggregatedTestCases, ...data.testCases];
+        } else {
+          throw new Error('The AI failed to generate valid test cases in one or more batches. Please check your requirements or AI settings.');
+        }
+      }
+
+      if (aggregatedTestCases.length === 0) {
+        throw new Error('Zero test cases were generated. Please refine your Additional Context or PRD content.');
+      }
+
+      setBatchProgress('Finalizing XML and uploading...');
+      
+      // We need to get the final XML from the last response or regenerate it locally if needed
+      // Actually, let's have the backend return the aggregated XML only on the last step or just use the data
+      const finalXmlRes = await fetch('/api/testlink/generate', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          jiraCredentials: jiraCreds.url ? { url: jiraCreds.url, email: jiraCreds.email, token: jiraCreds.token } : null,
-          issueKeys: keys,
-          llmConfig: { llm: llmCreds.llm || 'groq', llmKey: llmCreds.llmKey },
           testSuiteName: testSuite || 'Generated Test Cases',
-          additionalContext: additionalContext || '',
-          prdContent: prdContent || ''
+          testCases: aggregatedTestCases,
+          onlyXml: true // Optimization: backend just generates XML
         })
       });
-
-      const data = await resp.json();
-      if (!resp.ok || data.error) throw new Error(data.error || 'Generation failed.');
-
-      setXmlContent(data.xml || '');
+      const finalXmlData = await finalXmlRes.json();
+      setXmlContent(finalXmlData.xml || '');
       
       // Trigger TestLink Auto-Upload
       if (tlCreds.devKey && tlCreds.url) {
-        try {
-          alert("Uploading directly to TestLink...");
-          const uploadResp = await fetch('/api/testlink/upload', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              testCases: data.testCases,
-              testSuiteName: testSuite || 'Generated Test Cases',
-              projectName: testLinkProject || '',
-              testlinkCredentials: { url: tlCreds.url, devKey: tlCreds.devKey }
-            })
-          });
-          const uploadData = await uploadResp.json();
-          if (uploadResp.ok) {
-             alert(`Successfully uploaded to TestLink! Created/Updated ${uploadData.count || 0} cases.`);
-          } else {
-             throw new Error(uploadData.error || 'Failed to upload to TestLink');
-          }
-        } catch (upErr: any) {
-          setErrorMsg(`Generated XML locally, but Upload failed: ${upErr.message}`);
+        setBatchProgress(`Uploading ${aggregatedTestCases.length} cases to TestLink...`);
+        const uploadResp = await fetch('/api/testlink/upload', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            testCases: aggregatedTestCases,
+            testSuiteName: testSuite || 'Generated Test Cases',
+            projectName: testLinkProject || '',
+            testlinkCredentials: { url: tlCreds.url, devKey: tlCreds.devKey }
+          })
+        });
+        const uploadData = await uploadResp.json();
+        if (uploadResp.ok) {
+           alert(uploadData.message || `Successfully uploaded to TestLink! Created/Updated ${uploadData.count || 0} cases.`);
+        } else {
+           throw new Error(uploadData.error || 'Failed to upload to TestLink');
         }
-      } else {
-        alert("TestLink Credentials missing in config. Showing XML only.");
       }
-
     } catch (err: any) {
       setErrorMsg(err.message);
     } finally {
       setGenerating(false);
+      setBatchProgress('');
     }
   };
 
@@ -195,11 +233,11 @@ export default function TestCasesGenerator() {
       <div className="space-y-6">
         <div className="grid grid-cols-1 gap-6">
           <div>
-            <label className="text-xs font-medium text-slate-700 dark:text-slate-400">JIRA Project ID</label>
+            <label className="text-xs font-medium text-slate-700 dark:text-slate-400">JIRA Project ID (Optional)</label>
             <input type="text" value={jiraProjectId} onChange={(e)=>setJiraProjectId(e.target.value)} placeholder="e.g., VWOAPP" className="focus:ring-2 focus:ring-emerald-500 outline-none w-full mt-1 px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm shadow-sm transition-shadow uppercase" />
           </div>
           <div>
-            <label className="text-xs font-medium text-slate-700 dark:text-slate-400">JIRA Ticket ID</label>
+            <label className="text-xs font-medium text-slate-700 dark:text-slate-400">JIRA Ticket IDs (Optional if context/PRD provided)</label>
             <textarea value={jiraTicketId} onChange={(e)=>setJiraTicketId(e.target.value)} placeholder="Comma-separated ticket keys (e.g., VWOAPP-100, VWOAPP-101)" className="focus:ring-2 focus:ring-emerald-500 outline-none w-full mt-1 px-4 py-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm shadow-sm min-h-[80px] resize-y"></textarea>
           </div>
           <div>
@@ -256,14 +294,25 @@ export default function TestCasesGenerator() {
         </div>
       </div>
 
-      <div className="pt-6 border-t border-slate-100 dark:border-slate-800 flex justify-end gap-4 items-center">
+      <div className="pt-6 border-t border-slate-100 dark:border-slate-800 flex justify-between items-center gap-4">
+        <div className="flex-1">
+          {batchProgress && (
+            <div className="flex items-center gap-3 animate-pulse">
+              <Loader2 size={16} className="text-emerald-500 animate-spin" />
+              <span className="text-xs font-bold text-emerald-600 dark:text-emerald-400 uppercase tracking-widest">
+                {batchProgress}
+              </span>
+            </div>
+          )}
+        </div>
+
         <button 
           onClick={() => handleGenerate()}
           disabled={generating}
-          className="flex items-center gap-2 px-6 py-2.5 bg-emerald-600 hover:bg-emerald-700 text-white rounded-lg font-medium text-sm transition-colors shadow-lg shadow-emerald-500/30"
+          className="flex items-center gap-2 px-8 py-3 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl font-bold text-sm transition-all shadow-lg shadow-emerald-500/30 active:scale-95 disabled:opacity-50"
         >
-          {generating ? <Loader2 size={16} className="animate-spin" /> : <Server size={16} />}
-          Generate to TestLink
+          {generating ? <Loader2 size={18} className="animate-spin" /> : <Server size={18} />}
+          {generating ? 'Processing...' : 'Generate to TestLink'}
         </button>
       </div>
 

@@ -58,7 +58,7 @@ export default function TestPlanGenerator() {
           url: jiraCreds.url,
           email: jiraCreds.email,
           token: jiraCreds.token,
-          projectKey: projectId
+          projectKey: projectId.trim().toUpperCase()
         })
       });
 
@@ -66,7 +66,7 @@ export default function TestPlanGenerator() {
       if (!resp.ok) throw new Error(data.error || 'Failed to fetch issues');
       
       if (!data.issues || data.issues.length === 0) {
-        setErrorMsg("No tickets found for the specified criteria.");
+        setErrorMsg(`No tickets found for Project ID "${projectId.toUpperCase()}". Please verify the ID is correct and that the project contains active user stories.`);
         return;
       }
       

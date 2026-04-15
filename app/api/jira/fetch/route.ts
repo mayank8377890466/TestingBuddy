@@ -15,7 +15,7 @@ export async function POST(req: Request) {
     
     // Construct JQL
     let jql = '';
-    const keyInput = projectKey.trim();
+    const keyInput = projectKey.trim().toUpperCase();
 
     // Check if user provided issue keys (e.g., PROJ-101 or comma-separated)
     if (keyInput.includes('-')) {
@@ -31,13 +31,19 @@ export async function POST(req: Request) {
     // Strip trailing slash from URL if present
     const cleanUrl = url.endsWith('/') ? url.slice(0, -1) : url;
 
-    // Fetch from Jira Cloud API v3 Search endpoint
-    const response = await fetch(`${cleanUrl}/rest/api/3/search/jql?jql=${encodeURIComponent(jql)}&maxResults=50&fields=summary,issuetype`, {
-      method: 'GET',
+    // Fetch from Jira Cloud API v3 Search endpoint (POST is more robust)
+    const response = await fetch(`${cleanUrl}/rest/api/3/search/jql`, {
+      method: 'POST',
       headers: {
         'Authorization': `Basic ${authString}`,
-        'Accept': 'application/json'
-      }
+        'Accept': 'application/json',
+        'Content-Type': 'application/json'
+      },
+      body: JSON.stringify({
+        jql,
+        maxResults: 100,
+        fields: ['summary', 'issuetype', 'status']
+      })
     });
 
     if (!response.ok) {

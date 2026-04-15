@@ -12,13 +12,13 @@ const STORAGE_KEY = 'testingbuddy_config';
 
 export interface AppConfig {
   jira: { provider: string; url: string; email: string; token: string };
-  llm: { llm: string; llmKey: string };
+  llm: { llm: string; llmKey: string; model: string };
   testlink: { provider: string; devKey: string; url: string };
 }
 
 const DEFAULT_CONFIG: AppConfig = {
   jira: { provider: 'jira', url: '', email: '', token: '' },
-  llm: { llm: 'groq', llmKey: '' },
+  llm: { llm: 'groq', llmKey: '', model: 'llama-3.3-70b-versatile' },
   testlink: { provider: 'testlink', devKey: '', url: '' },
 };
 

@@ -64,10 +64,22 @@ export async function POST(req: Request) {
     };
 
     const extractStringValueSafely = (xml: string, keyToFind: string) => {
-        // Naive extraction of <name>id</name><value><string>5</string></value>
-        const match = xml.match(new RegExp(`<name>${keyToFind}</name>\\s*<value>\\s*<(string|int)>(.*?)<\\/\\1>`));
-        if (match && match[2]) return parseInt(match[2], 10);
+        // Find member with specified name - handles both structural and flat matches
+        const memberRegex = new RegExp(`<member>\\s*<name>${keyToFind}<\\/name>\\s*<value>\\s*<(string|int)>(.*?)<\\/\\1>`, 'is');
+        const match = xml.match(memberRegex);
+        if (match && match[2]) return match[2].trim();
+        
+        // Secondary fallback for <struct><value><int>XXX</int></value></struct> patterns found in some TestLink versions
+        const valueOnlyRegex = new RegExp(`<value>\\s*<(string|int)>(.*?)<\\/\\1>`, 'is');
+        const valueMatch = xml.match(valueOnlyRegex);
+        if (valueMatch && valueMatch[2]) return valueMatch[2].trim();
+
         return null;
+    };
+
+    const extractErrorMessage = (xml: string) => {
+        const msgMatch = xml.match(/<name>message<\/name>\s*<value>\s*<string>(.*?)<\/string>/is);
+        return msgMatch ? msgMatch[1] : null;
     };
     
     // 1. Get Project ID
@@ -75,51 +87,67 @@ export async function POST(req: Request) {
         devKey: testlinkCredentials.devKey, 
         testprojectname: projectName 
     });
-    const projectId = extractStringValueSafely(projRes, 'id');
     
-    if (!projectId) {
-       return NextResponse.json({ error: `Could not find Test Project by name: ${projectName}` }, { status: 400 });
+    const projectIdRaw = extractStringValueSafely(projRes, 'id');
+    const projectId = projectIdRaw ? parseInt(projectIdRaw, 10) : NaN;
+    
+    if (isNaN(projectId) || projectId <= 0) {
+       const apiError = extractErrorMessage(projRes);
+       return NextResponse.json({ 
+         error: apiError || `Could not find Test Project by name: "${projectName}". Please ensure the name matches exactly in TestLink.` 
+       }, { status: 400 });
     }
 
-    // 2. Create Test Suite
+    // 2. Create or Resolve Test Suite
     const suiteRes = await sendRpc('tl.createTestSuite', {
         devKey: testlinkCredentials.devKey,
         testprojectid: projectId,
         testsuitename: testSuiteName || 'Generated Output',
         details: 'Auto-generated suite by TestingBuddy AI'
     });
-    // TestLink createTestSuite returns [{ id: 'xx', ... }] or { status: false, message: ...}
-    // We try to extract id or just grab the first ID found inside an array response
-    let suiteId = extractStringValueSafely(suiteRes, 'id');
-    if (!suiteId) {
-        const fallbackMatch = suiteRes.match(/<value><string>(\d+)<\/string><\/value>/);
-        if (fallbackMatch) suiteId = parseInt(fallbackMatch[1], 10);
+    
+    let suiteIdRaw = extractStringValueSafely(suiteRes, 'id');
+    let suiteId = suiteIdRaw ? parseInt(suiteIdRaw, 10) : NaN;
+    
+    // Fallback: If creation failed (likely exists), fetch it
+    if (isNaN(suiteId) || suiteId <= 0) {
+        const fetchSuitesRes = await sendRpc('tl.getFirstLevelTestSuitesForTestProject', {
+           devKey: testlinkCredentials.devKey,
+           testprojectid: projectId
+        });
         
-        if (!suiteId) {
-            // It might already exist, so fetch existing suites
-            const fetchSuitesRes = await sendRpc('tl.getFirstLevelTestSuitesForTestProject', {
-               devKey: testlinkCredentials.devKey,
-               testprojectid: projectId
-            });
-            const targetSuiteName = testSuiteName || 'Generated Output';
-            const structMatches = fetchSuitesRes.match(/<struct>[\s\S]*?<\/struct>/g);
-            if (structMatches) {
-               for (const struct of structMatches) {
-                  if (struct.includes(`<value><string>${targetSuiteName}</string></value>`)) {
-                      suiteId = extractStringValueSafely(struct, 'id');
+        const targetSuiteName = testSuiteName || 'Generated Output';
+        // TestLink returns an array of structs for multiple suites
+        const structMatches = fetchSuitesRes.match(/<struct>[\s\S]*?<\/struct>/gi);
+        if (structMatches) {
+           for (const structXml of structMatches) {
+              const nameValue = extractStringValueSafely(structXml, 'name');
+              if (nameValue && nameValue.toLowerCase() === targetSuiteName.toLowerCase()) {
+                  const idValue = extractStringValueSafely(structXml, 'id');
+                  if (idValue) {
+                      suiteId = parseInt(idValue, 10);
                       break;
                   }
-               }
-            }
+              }
+           }
         }
 
-        if (!suiteId) {
-           return NextResponse.json({ error: `Failed to create/resolve Test Suite: ${testSuiteName || 'Generated Output'}` }, { status: 400 });
+        if (isNaN(suiteId) || suiteId <= 0) {
+           const apiError = extractErrorMessage(suiteRes);
+           return NextResponse.json({ 
+             error: apiError || `Failed to resolve Test Suite: "${targetSuiteName}". Please create it manually in TestLink project ID ${projectId} first.` 
+           }, { status: 400 });
         }
     }
 
+    // Final Validation
+    const finalSuiteId = suiteId;
+    const finalProjectId = projectId;
+
     // 3. Create Test Cases
     let createdCount = 0;
+    let errorSummary: string[] = [];
+    
     for (const tc of testCases) {
        const stepsArr = (tc.steps || []).map((s: any) => ({
           step_number: s.step_number || 1,
@@ -131,9 +159,9 @@ export async function POST(req: Request) {
        const tcRes = await sendRpc('tl.createTestCase', {
            devKey: testlinkCredentials.devKey,
            testcasename: tc.name.substring(0, 100),
-           testsuiteid: suiteId,
-           testprojectid: projectId,
-           authorlogin: 'admin', // Or any string, can be ignored mostly
+           testsuiteid: finalSuiteId,
+           testprojectid: finalProjectId,
+           authorlogin: 'admin', 
            summary: tc.summary || '',
            steps: stepsArr,
            preconditions: tc.preconditions || '',
@@ -141,17 +169,32 @@ export async function POST(req: Request) {
            executiontype: tc.execution_type || 1
        });
 
-       if (tcRes.includes('status') && !tcRes.includes('<value><boolean>0</boolean></value>')) {
+       // TestLink returns:
+       // Success: [{ id: "...", ... }]
+       // Failure: [{ code: 504, message: "Duplicate name" }]
+       const hasId = tcRes.includes('<name>id</name>') || tcRes.match(/<value><string>\d+<\/string><\/value>/);
+       const isExplicitTrue = tcRes.includes('<boolean>1</boolean>') || tcRes.includes('"status":true');
+       
+       if (hasId || isExplicitTrue) {
           createdCount++;
-       } else if (tcRes.includes('"status":true') || tcRes.includes('id')) {
-          createdCount++;
+       } else {
+          // Extract specific error if it failed
+          const apiError = extractErrorMessage(tcRes);
+          if (apiError) {
+             if (!errorSummary.includes(apiError)) errorSummary.push(apiError);
+          }
        }
+    }
+
+    let finalMessage = `Successfully uploaded ${createdCount} of ${testCases.length} cases.`;
+    if (errorSummary.length > 0) {
+       finalMessage += ` Note: ${errorSummary.join('; ')}`;
     }
 
     return NextResponse.json({ 
         success: true, 
         count: createdCount,
-        message: "Test Cases uploaded successfully to TestLink via XML-RPC."
+        message: finalMessage
     });
 
   } catch (error: any) {

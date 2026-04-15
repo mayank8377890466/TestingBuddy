@@ -236,47 +236,133 @@ CRITICAL INSTRUCTIONS:
 - Every section must contain content specifically relevant to the provided Jira tickets.
 - Use proper markdown formatting with headers, tables, bullet points, and bold text.
 - Be thorough and professional — this is an enterprise-grade deliverable.`;
+    let targetPrompt = prompt;
 
-    if (credentials.llm === 'groq') {
-      const resp = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    // Prompt Triage: Optimize for local models if using Ollama
+    if (credentials.llm === 'llama') {
+      targetPrompt = `You are an expert QA Architect. Generate a concise, enterprise-grade Test Plan for these Jira tickets:
+${issueList}
+
+STRUCTURE:
+# Test Plan
+## 1. Objective
+(2-3 clear goal statements)
+
+## 2. Critical Test Scope
+(Focus on Functional, Security, and Regression testing specific to the tickets)
+
+## 3. Test Inclusions
+(List scenarios for Create, Read, Update, Delete based on the tickets)
+
+## 4. Test Environment 
+(Table with QA and Pre-Prod environments)
+
+## 5. Defect Reporting
+(Define Priority P1-P4 and the triage process)
+
+## 6. Test Strategy
+(Smoke, Sanity, and Regression cycles)
+
+## 7. Risks & Mitigations
+(List at least 3 project-specific risks)
+
+## 8. entry and Exit Criteria
+
+INSTRUCTIONS:
+- Return ONLY markdown.
+- Be specific to the Jira tickets.
+- Keep it thorough but concise for local execution.`;
+    }
+
+    const modelId = credentials.model || (credentials.llm === 'groq' ? 'llama-3.3-70b-versatile' : 'gpt-4o');
+    
+    // Unified Multi-Provider Logic
+    if (credentials.llm !== 'llama') {
+      let apiUrl = 'https://api.groq.com/openai/v1/chat/completions';
+      const headers: Record<string, string> = {
+        'Authorization': `Bearer ${credentials.llmKey}`,
+        'Content-Type': 'application/json'
+      };
+
+      if (credentials.llm === 'openai') {
+        apiUrl = 'https://api.openai.com/v1/chat/completions';
+      } else if (credentials.llm === 'openrouter') {
+        apiUrl = 'https://openrouter.ai/api/v1/chat/completions';
+        headers['HTTP-Referer'] = 'https://testingbuddy.ai';
+        headers['X-Title'] = 'TestingBuddy';
+      }
+
+      const resp = await fetch(apiUrl, {
         method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${credentials.llmKey}`,
-          'Content-Type': 'application/json'
-        },
+        headers,
         body: JSON.stringify({
-          model: 'llama-3.3-70b-versatile',
-          messages: [{ role: 'user', content: prompt }],
+          model: modelId,
+          messages: [{ role: 'user', content: targetPrompt }],
           temperature: 0.15,
-          max_tokens: 8000
+          max_tokens: 2000
         })
       });
 
       if (!resp.ok) {
         const errText = await resp.text();
-        return NextResponse.json({ status: 'error', error: `GROQ Error: HTTP ${resp.status} - ${errText}` }, { status: 400 });
+        let errorMessage = errText;
+        
+        try {
+          const errJson = JSON.parse(errText);
+          const providerErr = errJson.error || errJson;
+          
+          if (providerErr.code === 'rate_limit_exceeded') {
+            const waitTime = providerErr.message.match(/try again in ([\d.]+)s/i)?.[1] || 'a few';
+            errorMessage = `Rate limit reached for ${modelId}. Please try again in ${waitTime} seconds, or switch to a free OpenRouter model in Settings.`;
+          } else {
+            errorMessage = providerErr.message || errText;
+          }
+        } catch (e) {
+          // Fallback to raw text if not JSON
+        }
+
+        return NextResponse.json({ 
+          status: 'error', 
+          error: `${credentials.llm.toUpperCase()} Error: ${errorMessage}` 
+        }, { status: 400 });
       }
 
       const data = await resp.json();
-      return NextResponse.json({ status: 'success', test_plan_markdown: data.choices[0].message.content });
-    } else {
-      // Local Llama fallback
-      const resp = await fetch('http://localhost:11434/api/generate', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          model: 'llama3', 
-          prompt: prompt,
-          stream: false
-        })
+      return NextResponse.json({ 
+        status: 'success', 
+        test_plan_markdown: data.choices?.[0]?.message?.content || 'No content generated.' 
       });
 
-      if (!resp.ok) {
-        return NextResponse.json({ status: 'error', error: `Ollama Error: HTTP ${resp.status}` }, { status: 400 });
-      }
+    } else {
+      // Dynamic Ollama Implementation
+      try {
+        const baseUrl = credentials.llmKey.endsWith('/') ? credentials.llmKey.slice(0, -1) : credentials.llmKey;
+        const resp = await fetch(`${baseUrl}/api/generate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            model: modelId, 
+            prompt: targetPrompt,
+            stream: false
+          })
+        });
 
-      const data = await resp.json();
-      return NextResponse.json({ status: 'success', test_plan_markdown: data.response });
+        if (!resp.ok) {
+          const errText = await resp.text();
+          return NextResponse.json({ 
+            status: 'error', 
+            error: `Ollama Error: HTTP ${resp.status} at ${baseUrl} - ${errText}` 
+          }, { status: 400 });
+        }
+
+        const data = await resp.json();
+        return NextResponse.json({ status: 'success', test_plan_markdown: data.response });
+      } catch (err: any) {
+        return NextResponse.json({ 
+          status: 'error', 
+          error: `Failed to reach Ollama at ${credentials.llmKey}: ${err.message}` 
+        }, { status: 500 });
+      }
     }
 
   } catch (error: any) {
