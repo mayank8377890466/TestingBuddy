@@ -56,6 +56,11 @@ const MODEL_PRESETS: Record<string, string[]> = {
     'gemma2',
     'phi3',
     'codellama'
+  ],
+  lmstudio: [
+    'local-model',
+    'llama-3',
+    'qwen-2.5'
   ]
 };
 
@@ -164,6 +169,7 @@ export default function LLMConnection() {
                <option value="openai">OpenAI</option>
                <option value="openrouter">OpenRouter</option>
                <option value="llama">Ollama (Local)</option>
+               <option value="lmstudio">LM Studio (Local)</option>
              </select>
           </div>
           
@@ -201,22 +207,23 @@ export default function LLMConnection() {
         
         <div>
           <label className="text-xs font-medium text-slate-500 uppercase tracking-wider">
-            {formData.llm === 'llama' ? 'Ollama Server URL' : 'API Key'}
+            {formData.llm === 'llama' ? 'Ollama Server URL' : formData.llm === 'lmstudio' ? 'LM Studio Server URL (e.g. http://localhost:1234/v1)' : 'API Key'}
           </label>
           <input 
-            type={formData.llm === 'llama' ? "text" : "password"} 
+            type={['llama', 'lmstudio'].includes(formData.llm) ? "text" : "password"} 
             value={formData.llmKey} 
             onChange={e => handleChange('llmKey', e.target.value)} 
             placeholder={
               formData.llm === 'groq' ? "gsk_..." : 
               formData.llm === 'openai' ? "sk-..." : 
               formData.llm === 'openrouter' ? "sk-or-..." :
+              formData.llm === 'lmstudio' ? "http://localhost:1234/v1" :
               "http://localhost:11434"
             } 
             className="focus:ring-2 focus:ring-purple-500 outline-none w-full mt-1.5 px-3 py-2.5 bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-700 rounded-lg text-sm shadow-sm transition-all" 
           />
           <p className="text-[10px] text-slate-400 mt-1.5 italic">
-            {formData.llm === 'llama' ? 'Enter your local Ollama URL (Default: http://localhost:11434)' : 'Your API key is stored locally in your browser and never sent to our servers.'}
+            {formData.llm === 'llama' ? 'Enter your local Ollama URL (Default: http://localhost:11434)' : formData.llm === 'lmstudio' ? 'Enter your LM Studio Local Server URL based on the Developer tab in LM Studio' : 'Your API key is stored locally in your browser and never sent to our servers.'}
           </p>
         </div>
 

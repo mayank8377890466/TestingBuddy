@@ -336,16 +336,25 @@ INSTRUCTIONS:
     } else {
       // Dynamic Ollama Implementation
       try {
-        const baseUrl = credentials.llmKey.endsWith('/') ? credentials.llmKey.slice(0, -1) : credentials.llmKey;
+        let baseUrl = credentials.llmKey.endsWith('/') ? credentials.llmKey.slice(0, -1) : credentials.llmKey;
+        baseUrl = baseUrl.replace('localhost', '127.0.0.1');
+        
+        // Add a 15-minute timeout so the UI doesn't hang infinitely if Ollama deadlocks
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 900000); // 15 minutes
+
         const resp = await fetch(`${baseUrl}/api/generate`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({
             model: modelId, 
             prompt: targetPrompt,
-            stream: false
-          })
+            stream: true
+          }),
+          signal: controller.signal
         });
+        
+        clearTimeout(timeoutId);
 
         if (!resp.ok) {
           const errText = await resp.text();
@@ -355,9 +364,33 @@ INSTRUCTIONS:
           }, { status: 400 });
         }
 
-        const data = await resp.json();
-        return NextResponse.json({ status: 'success', test_plan_markdown: data.response });
+        const reader = resp.body?.getReader();
+        const decoder = new TextDecoder();
+        let fullResponse = '';
+
+        if (reader) {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value, { stream: true });
+            const lines = chunk.split('\n').filter(l => l.trim() !== '');
+            for (const line of lines) {
+              try {
+                const parsed = JSON.parse(line);
+                if (parsed.response) fullResponse += parsed.response;
+              } catch (e) {}
+            }
+          }
+        }
+
+        return NextResponse.json({ status: 'success', test_plan_markdown: fullResponse });
       } catch (err: any) {
+        if (err.name === 'AbortError') {
+          return NextResponse.json({ 
+            status: 'error', 
+            error: `Ollama Timeout: The model took too long to respond (>5 mins) or crashed. Please restart your Ollama application.` 
+          }, { status: 504 });
+        }
         return NextResponse.json({ 
           status: 'error', 
           error: `Failed to reach Ollama at ${credentials.llmKey}: ${err.message}` 

@@ -18,6 +18,7 @@ export default function TestCasesGenerator() {
   const [generating, setGenerating] = useState(false);
   const [errorMsg, setErrorMsg] = useState('');
   const [xmlContent, setXmlContent] = useState('');
+  const [totalTarget, setTotalTarget] = useState('5');
   const [batchProgress, setBatchProgress] = useState('');
 
   const [globalConfig, setGlobalConfig] = useState<any>({ jira: {}, llm: {}, testlink: {} });
@@ -46,8 +47,8 @@ export default function TestCasesGenerator() {
       return;
     }
 
-    // For PDF, DOCX and DOC, use server-side parser
-    if (fileName.endsWith('.pdf') || fileName.endsWith('.docx') || fileName.endsWith('.doc')) {
+    // For PDF and DOCX, use server-side parser
+    if (fileName.endsWith('.pdf') || fileName.endsWith('.docx')) {
       setIsParsingPrd(true);
       try {
         const formData = new FormData();
@@ -58,15 +59,9 @@ export default function TestCasesGenerator() {
           body: formData
         });
         
-        const contentType = resp.headers.get("content-type");
         if (!resp.ok) {
-          if (contentType && contentType.includes("application/json")) {
-            const data = await resp.json();
-            throw new Error(data.error || 'Failed to parse document');
-          } else {
-            const text = await resp.text();
-            throw new Error(`Server Error: ${resp.status} - ${text.substring(0, 100)}...`);
-          }
+          const data = await resp.json();
+          throw new Error(data.error || 'Failed to parse document');
         }
         
         const data = await resp.json();
@@ -80,7 +75,7 @@ export default function TestCasesGenerator() {
       return;
     }
 
-    setErrorMsg('Unsupported file format. Please upload PDF, DOCX, DOC, TXT, or MD.');
+    setErrorMsg('Unsupported file format. Please upload PDF, DOCX, TXT, or MD.');
     setPrdFileName('');
   };
 
@@ -93,8 +88,8 @@ export default function TestCasesGenerator() {
 
   const handleGenerate = async () => {
     const keys = jiraTicketId.split(/[,\n]+/).map(k => k.trim()).filter(Boolean);
-    if (keys.length === 0 && !additionalContext.trim() && !prdContent.trim()) {
-      setErrorMsg('Please provide at least one source for generation (JIRA IDs, Additional Context, or a PRD file).');
+    if (keys.length === 0) {
+      setErrorMsg('Enter at least one JIRA Ticket ID.');
       return;
     }
     
@@ -107,49 +102,77 @@ export default function TestCasesGenerator() {
       return;
     }
 
-    // Parse target count from context (e.g., "generate 50 cases")
-    const countMatch = additionalContext.match(/(\d+)\s*(?:test\s*)?cases?/i);
-    const totalTarget = countMatch ? Math.min(parseInt(countMatch[1], 10), 100) : 15;
-
     setGenerating(true);
-    setBatchProgress('');
     setErrorMsg('');
     setXmlContent('');
+    setBatchProgress('Initializing...');
 
     try {
-      const BATCH_SIZE = 5;
-      const iterations = Math.ceil(totalTarget / BATCH_SIZE);
+      const BATCH_SIZE = llmCreds.llm === 'groq' ? 10 : 5;
+      const totalTargetNum = parseInt(totalTarget) || 5;
       let aggregatedTestCases: any[] = [];
+      let attempts = 0;
+      let consecutiveDuplicates = 0;
+      const maxAttempts = totalTargetNum * 2; 
 
-      for (let i = 0; i < iterations; i++) {
-        const remaining = totalTarget - aggregatedTestCases.length;
+      while (aggregatedTestCases.length < totalTargetNum && attempts < maxAttempts) {
+        attempts++;
+        const remaining = totalTargetNum - aggregatedTestCases.length;
         const currentBatchSize = Math.min(remaining, BATCH_SIZE);
-        setBatchProgress(`Batch ${i + 1} of ${iterations} (${aggregatedTestCases.length}/${totalTarget})...`);
+        
+        setBatchProgress(`Batch ${attempts}: Generating ${aggregatedTestCases.length + 1} to ${Math.min(aggregatedTestCases.length + currentBatchSize, totalTargetNum)}...`);
 
-        const existingNames = aggregatedTestCases.map(tc => tc.name);
+        const existingNames = aggregatedTestCases.slice(-30).map(tc => tc.name);
 
-        const resp = await fetch('/api/testlink/generate', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            jiraCredentials: jiraCreds.url ? { url: jiraCreds.url, email: jiraCreds.email, token: jiraCreds.token } : null,
-            issueKeys: keys,
-            llmConfig: { llm: llmCreds.llm || 'groq', llmKey: llmCreds.llmKey },
-            testSuiteName: testSuite || 'Generated Test Cases',
-            additionalContext: additionalContext || '',
-            prdContent: prdContent || '',
-            targetCount: currentBatchSize,
-            existingCaseNames: existingNames
-          })
-        });
+        try {
+          const resp = await fetch('/api/testlink/generate', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              jiraCredentials: jiraCreds.url ? { url: jiraCreds.url, email: jiraCreds.email, token: jiraCreds.token } : null,
+              issueKeys: keys,
+              llmConfig: { llm: llmCreds.llm || 'groq', llmKey: llmCreds.llmKey, model: llmCreds.model },
+              testSuiteName: testSuite || 'Generated Test Cases',
+              additionalContext: additionalContext || '',
+              prdContent: prdContent || '',
+              targetCount: currentBatchSize,
+              existingCaseNames: existingNames
+            })
+          });
 
-        const data = await resp.json();
-        if (!resp.ok || data.error) throw new Error(data.error || 'Generation failed.');
+          if (!resp.ok) {
+            const errData = await resp.json();
+            throw new Error(errData.error || `Server Error ${resp.status}`);
+          }
 
-        if (data.testCases && Array.isArray(data.testCases)) {
-          aggregatedTestCases = [...aggregatedTestCases, ...data.testCases];
-        } else {
-          throw new Error('The AI failed to generate valid test cases in one or more batches. Please check your requirements or AI settings.');
+          const data = await resp.json();
+          if (data.testCases && Array.isArray(data.testCases)) {
+            const normalize = (name: string) => name.replace(/^TC_\d+:\s*/i, '').trim().toLowerCase();
+
+            const newUniqueCases = data.testCases.filter(newTc => {
+              const normalizedNew = normalize(newTc.name);
+              return !aggregatedTestCases.some(existing => normalize(existing.name) === normalizedNew);
+            });
+            
+            if (newUniqueCases.length > 0) {
+              aggregatedTestCases = [...aggregatedTestCases, ...newUniqueCases];
+              consecutiveDuplicates = 0; // Reset counter on success
+              
+              // Add a small delay between batches to avoid rate limiting
+              await new Promise(resolve => setTimeout(resolve, 1000));
+            } else {
+              consecutiveDuplicates++;
+              console.warn(`Attempt ${attempts}: AI generated ONLY duplicates. (${consecutiveDuplicates}/3)`);
+              if (consecutiveDuplicates >= 3) {
+                console.warn("Giving up on finding more unique cases to save time.");
+                break;
+              }
+            }
+          }
+        } catch (batchErr: any) {
+          console.error("Batch Error:", batchErr);
+          if (aggregatedTestCases.length > 0) break; 
+          throw batchErr;
         }
       }
 
@@ -233,16 +256,20 @@ export default function TestCasesGenerator() {
       <div className="space-y-6">
         <div className="grid grid-cols-1 gap-6">
           <div>
-            <label className="text-xs font-medium text-slate-700 dark:text-slate-400">JIRA Project ID (Optional)</label>
+            <label className="text-xs font-medium text-slate-700 dark:text-slate-400">JIRA Project ID</label>
             <input type="text" value={jiraProjectId} onChange={(e)=>setJiraProjectId(e.target.value)} placeholder="e.g., VWOAPP" className="focus:ring-2 focus:ring-emerald-500 outline-none w-full mt-1 px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm shadow-sm transition-shadow uppercase" />
           </div>
           <div>
-            <label className="text-xs font-medium text-slate-700 dark:text-slate-400">JIRA Ticket IDs (Optional if context/PRD provided)</label>
+            <label className="text-xs font-medium text-slate-700 dark:text-slate-400">JIRA Ticket ID</label>
             <textarea value={jiraTicketId} onChange={(e)=>setJiraTicketId(e.target.value)} placeholder="Comma-separated ticket keys (e.g., VWOAPP-100, VWOAPP-101)" className="focus:ring-2 focus:ring-emerald-500 outline-none w-full mt-1 px-4 py-3 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm shadow-sm min-h-[80px] resize-y"></textarea>
           </div>
           <div>
             <label className="text-xs font-medium text-slate-700 dark:text-slate-400">TestLink Project</label>
             <input type="text" value={testLinkProject} onChange={(e)=>setTestLinkProject(e.target.value)} placeholder="e.g., VWO Core Platform" className="focus:ring-2 focus:ring-emerald-500 outline-none w-full mt-1 px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm shadow-sm transition-shadow" />
+          </div>
+          <div>
+            <label className="text-xs font-medium text-slate-700 dark:text-slate-400">Target Test Cases Count</label>
+            <input type="number" value={totalTarget} onChange={(e)=>setTotalTarget(e.target.value)} min="1" max="100" className="focus:ring-2 focus:ring-emerald-500 outline-none w-full mt-1 px-4 py-2.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg text-sm shadow-sm transition-shadow" />
           </div>
           <div>
             <label className="text-xs font-medium text-slate-700 dark:text-slate-400">Test Suite</label>
@@ -287,7 +314,7 @@ export default function TestCasesGenerator() {
                 className="mt-1 flex items-center justify-center gap-2 px-4 py-4 bg-slate-50 dark:bg-slate-800 border-2 border-dashed border-slate-200 dark:border-slate-700 rounded-lg cursor-pointer hover:border-emerald-400 hover:bg-emerald-50/50 dark:hover:bg-emerald-900/10 transition-all"
               >
                 <Upload size={16} className="text-slate-400" />
-                <span className="text-sm text-slate-500">Click to upload PRD (.txt, .md, .pdf, .doc, .docx)</span>
+                <span className="text-sm text-slate-500">Click to upload PRD (.txt, .md, .pdf, .docx)</span>
               </label>
             )}
           </div>

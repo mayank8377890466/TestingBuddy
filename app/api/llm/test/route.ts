@@ -51,6 +51,25 @@ export async function POST(req: Request) {
       }
     }
 
+    if (llm === 'lmstudio') {
+      try {
+        const cleanUrl = llmKey.endsWith('/') ? llmKey.slice(0, -1) : llmKey;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 3000);
+
+        const response = await fetch(`${cleanUrl}/models`, {
+          method: 'GET',
+          signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+
+        if (response.ok) return NextResponse.json({ success: true });
+        return NextResponse.json({ success: false, error: 'LM Studio is not reachable at this URL' }, { status: 401 });
+      } catch (err: any) {
+        return NextResponse.json({ success: false, error: `Local Connection Error: ${err.message}` }, { status: 500 });
+      }
+    }
+
     return NextResponse.json({ success: true });
   } catch (error: any) {
     return NextResponse.json({ success: false, error: error.message }, { status: 500 });
